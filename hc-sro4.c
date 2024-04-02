@@ -32,8 +32,10 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/timekeeping.h>
+#include <linux/math64.h>
 #include <linux/gpio/consumer.h>
 #include <linux/mutex.h>
+#include <linux/wait.h>
 #include <linux/device.h>
 #include <linux/sysfs.h>
 #include <linux/interrupt.h>
@@ -44,13 +46,14 @@
 #include <linux/delay.h>
 #include <linux/sched.h>
 
+
 struct hc_sro4 {
 	int gpio_trig;
 	int gpio_echo;
 	struct gpio_desc *trig_desc;
 	struct gpio_desc *echo_desc;
-	struct timeval time_triggered;
-	struct timeval time_echoed;
+	u64 time_triggered_ns;
+	u64 time_echoed_ns;
 	int echo_received;
 	int device_triggered;
 	struct mutex measurement_mutex;
@@ -110,9 +113,8 @@ static irqreturn_t echo_received_irq(int irq, void *data)
 {
 	struct hc_sro4 *device = (struct hc_sro4 *) data;
 	int val;
-	struct timeval irq_tv;
 
-	do_gettimeofday(&irq_tv);
+	u64 now = ktime_get();
 
 	if (!device->device_triggered)
 		return IRQ_HANDLED;
@@ -121,9 +123,9 @@ static irqreturn_t echo_received_irq(int irq, void *data)
 
 	val = gpiod_get_value(device->echo_desc);
 	if (val == 1) {
-		device->time_triggered = irq_tv;
+		device->time_triggered_ns = now;
 	} else {
-		device->time_echoed = irq_tv;
+		device->time_echoed_ns = now;
 		device->echo_received = 1;
 		wake_up_interruptible(&device->wait_for_echo);
 	}
@@ -185,9 +187,7 @@ static int do_measurement(struct hc_sro4 *device,
 	else if (timeout < 0)
 		ret = timeout;
 	else {
-		*usecs_elapsed =
-	(device->time_echoed.tv_sec - device->time_triggered.tv_sec) * 1000000 +
-	(device->time_echoed.tv_usec - device->time_triggered.tv_usec);
+		*usecs_elapsed = div_u64(device->time_echoed_ns - device->time_triggered_ns, 1000);
 		ret = 0;
 	}
 /* TODO: unlock_as_irq */
@@ -218,7 +218,6 @@ static ssize_t sysfs_do_measurement(struct device *dev,
 
 DEVICE_ATTR(measure, 0444, sysfs_do_measurement, NULL);
 
-
 static struct attribute *sensor_attrs[] = {
 	&dev_attr_measure.attr,
 	NULL,
@@ -233,21 +232,24 @@ static const struct attribute_group *sensor_groups[] = {
 	NULL
 };
 
-static ssize_t sysfs_configure_store(struct class *class,
+static ssize_t configure_store(struct class *class,
 				struct class_attribute *attr,
 				const char *buf, size_t len);
 
-static struct class_attribute hc_sro4_class_attrs[] = {
-	__ATTR(configure, 0200, NULL, sysfs_configure_store),
-	__ATTR_NULL,
+static CLASS_ATTR_WO(configure);
+
+static struct attribute *hc_sro4_class_attrs[] = {
+	&class_attr_configure.attr,
+	NULL
 };
+
+ATTRIBUTE_GROUPS(hc_sro4_class);
 
 static struct class hc_sro4_class = {
 	.name = "distance-sensor",
 	.owner = THIS_MODULE,
-	.class_attrs = hc_sro4_class_attrs
+	.class_groups = hc_sro4_class_groups,
 };
-
 
 static struct hc_sro4 *find_sensor(int trig, int echo)
 {
@@ -286,7 +288,7 @@ static int remove_sensor(struct hc_sro4 *rip_sensor)
 	return 0;
 }
 
-static ssize_t sysfs_configure_store(struct class *class,
+static ssize_t configure_store(struct class *class,
 				struct class_attribute *attr,
 				const char *buf, size_t len)
 {
