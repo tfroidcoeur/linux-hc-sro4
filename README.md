@@ -18,11 +18,25 @@ it works with the 3.3 Volts pins.
 Building
 --------
 
-You have two options to compile this driver for the Raspberry Pi:
+You have three options to compile this driver for the Raspberry Pi:
 
-- either compile it on a linux host using a cross development environment
+- compile it in the provided docker environment
    (recommended)
+- or compile it on a linux host using a cross development environment
 - or directly on the raspberry
+
+To compile it using the docker environment:
+
+```sh
+# make sure the kernel ref matches the rpi kernel you use
+# current defaul is 1.20220308_buster, the stable kernel on apr 2 2024
+# build the docker image (optionally use the --build-arg="KERNEL_REF=<yourref>") to use a different rpi kernel
+# this will take a bit of time
+docker build . -t rpi_cross 
+
+# now compile the driver
+docker run -ti -v .:/work  rpi_cross bash  -c make
+```
 
 To compile it using a cross development environment you'll need to install
 a cross development environment first (ARM cross compiler) and then obtain
@@ -54,7 +68,7 @@ on the raspberry.
 Note that the kernel version running on the raspberry *must* match the 
 version the module is built against, else insmod will not work.
 
-Comiling on the raspberry is not recommended, since this requires either
+Compiling on the raspberry is not recommended, since this requires either
 a kernel compile (takes hours) or using the kernel dev headers from the
 raspbian repo (which exists only for certain old kernels - this seems not
 to be supported).
